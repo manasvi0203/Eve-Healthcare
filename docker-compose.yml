@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eve_healthcare
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-applied by the official postgres image on first boot only (an
+      # empty data dir). Safe to also re-run manually via `npm run migrate`
+      # since every statement in schema.sql is idempotent.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/eve_healthcare
+      JWT_SECRET: change-this-to-a-long-random-string
+      JWT_EXPIRES_IN: 1h
+      BCRYPT_SALT_ROUNDS: 10
+      PAYMENT_SUCCESS_RATE: 0.8
+    # Belt-and-suspenders: also run the (idempotent) schema script before
+    # starting the server, in case the app container starts against a
+    # pre-existing volume that predates schema.sql's init-script mount.
+    command: sh -c "node scripts/migrate.js && node src/server.js"
+
+volumes:
+  pgdata:
