@@ -1,4 +1,4 @@
-# EVE Healthcare — Diagnostic Booking & Payments API
+# EVE Healthcare - Diagnostic Booking & Payments API
 
 A production-oriented REST API for diagnostic test discovery, bookings, and simulated payments, built as part of the **EVE Healthcare SDE Intern take-home assignment**.
 
@@ -636,39 +636,6 @@ PostgreSQL is required because the schema uses PostgreSQL-specific functionality
 - `gen_random_uuid()`
 - Native `ENUM` types
 - PostgreSQL transaction/locking behavior
-
----
-
-# Future Improvements
-
-If this were extended beyond the assignment, I would prioritize:
-
-1. **Webhook signature verification**  
-   Validate an HMAC signature such as `X-Signature: sha256=...` before processing webhooks.
-
-2. **Remove or restrict `forceOutcome`**  
-   Enable it only in test environments.
-
-3. **Versioned database migrations**  
-   Replace the single schema file with tools such as `node-pg-migrate` as the schema grows.
-
-4. **Role-based access control**  
-   Separate centre/test management from regular user access.
-
-5. **Optimize centre queries**  
-   Replace the current N+1 test-loading pattern with a single query using aggregation such as `json_agg`.
-
-6. **Structured application logging**  
-   Introduce structured logs and request IDs for easier debugging and distributed tracing.
-
-7. **Distributed rate limiting**  
-   Move rate-limit state to Redis for horizontally scaled deployments.
-
-8. **Background processing**  
-   Add a retry queue for webhook processing and other operations that need to survive application crashes.
-
-9. **Audit and retention controls**  
-   Add soft deletes and audit logging for healthcare-adjacent booking and payment data.
 
 ---
 
