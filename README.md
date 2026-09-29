@@ -1,88 +1,152 @@
-# EVE Healthcare — Diagnostic Bookings & Payments API
+EVE Healthcare — Diagnostic Booking & Payments API
 
-A backend service for diagnostic test bookings and simulated payments, built for the
-EVE Healthcare SDE Intern take-home assignment.
+A production-oriented REST API for diagnostic test discovery, bookings, and simulated payments, built as part of the EVE Healthcare SDE Intern take-home assignment.
 
-**Stack:** Node.js + Express + PostgreSQL (raw SQL via `pg`, no ORM), JWT auth, Jest + Supertest for tests.
+The project focuses on API design, PostgreSQL schema design, transaction safety, payment idempotency, authentication, validation, and integration testing.
 
-> **Why raw SQL instead of an ORM?** The assignment weighs database design heavily, and hand-written
-> SQL (see [`db/schema.sql`](./db/schema.sql)) makes the schema, constraints, and query plans directly
-> visible to a reviewer instead of hiding them behind an ORM's generated queries. It also made the
-> idempotency guarantees (below) easy to reason about precisely, since they hinge on real `UNIQUE`
-> constraints and row locks.
+Tech Stack
 
----
+Backend: Node.js, Express
 
-## Contents
+Database: PostgreSQL
 
-- [Quick start](#quick-start)
-- [API endpoints](#api-endpoints)
-- [Database / schema design](#database--schema-design)
-- [How the simulated payment flow works](#how-the-simulated-payment-flow-works)
-- [How webhook idempotency works](#how-webhook-idempotency-works)
-- [Edge cases handled](#edge-cases-handled)
-- [Running tests](#running-tests)
-- [Assumptions](#assumptions)
-- [What I'd improve with more time](#what-id-improve-with-more-time)
+Database access: pg with raw SQL
 
----
+Authentication: JWT
 
-## Quick start
+Validation: Zod
 
-### Option A — Docker Compose (recommended)
+Testing: Jest, Supertest
 
-```bash
-cp .env.example .env        # defaults already match docker-compose.yml
-docker-compose up --build
-```
+API Documentation: OpenAPI / Swagger
 
-This starts Postgres (with the schema auto-applied via `db/schema.sql` mounted into
-`/docker-entrypoint-initdb.d`) and the API on **http://localhost:3000**.
+Infrastructure: Docker Compose
 
-Interactive API docs: **http://localhost:3000/api/docs**
+Engineering Highlights
 
-### Option B — Run locally against your own Postgres
+Designed a normalized PostgreSQL schema with foreign keys, enums, unique constraints, and indexes.
 
-```bash
-npm install
+Used raw SQL to keep database behavior and transaction boundaries explicit.
+
+Implemented JWT-based authentication and ownership checks for protected resources.
+
+Used PostgreSQL transactions and SELECT ... FOR UPDATE to safely handle concurrent payment attempts.
+
+Designed idempotent payment webhooks using both event_id and provider_reference.
+
+Preserved payment history by allowing multiple payment attempts per booking.
+
+Added request validation, centralized error handling, rate limiting, and structured HTTP error responses.
+
+Built integration tests against a real PostgreSQL database rather than mocking the database layer.
+
+Table of Contents
+
+Getting Started
+
+API Overview
+
+Database Design
+
+Payment Flow
+
+Webhook Idempotency
+
+Validation and Edge Cases
+
+Testing
+
+Assumptions
+
+Future Improvements
+
+Getting Started
+
+Prerequisites
+
+For local development, you need:
+
+Node.js
+
+PostgreSQL
+
+npm
+
+Docker users only need Docker and Docker Compose.
+
+Option 1 — Docker Compose
+
+Recommended for the quickest setup.
+
 cp .env.example .env
-# edit .env: set DATABASE_URL to your local Postgres connection string
+docker-compose up --build
 
-npm run migrate     # applies db/schema.sql (safe to re-run; fully idempotent)
-npm run dev          # nodemon, or `npm start` for a plain node process
-```
+This starts PostgreSQL, automatically applies db/schema.sql, and runs the API at:
 
-### Running the test suite
+API: http://localhost:3000
+Swagger Docs: http://localhost:3000/api/docs
 
-```bash
-# create a separate test database once:
-createdb eve_healthcare_test
+Option 2 — Local PostgreSQL
 
-# .env should have TEST_DATABASE_URL pointing at it (see .env.example)
-npm test
-```
+npm install
 
-The suite uses a **real Postgres database** (truncated between tests), not mocks — this
-was a deliberate choice so the tests exercise the actual SQL, transactions, and unique
-constraints the idempotency guarantees rely on. See [Running tests](#running-tests) for
-more detail.
+cp .env.example .env
 
----
+Set DATABASE_URL in .env, then run:
 
-## API endpoints
+npm run migrate
+npm run dev
 
-Base path: `/api`. Full interactive documentation (OpenAPI/Swagger) is served at
-`/api/docs` once the server is running.
+For a standard Node process:
 
-### Auth
+npm start
 
-| Method | Path            | Auth | Description                       |
-|--------|-----------------|------|------------------------------------|
-| POST   | `/auth/signup`  | –    | Create an account                  |
-| POST   | `/auth/login`   | –    | Log in, returns a JWT              |
-| GET    | `/auth/me`      | ✅   | Get the current authenticated user |
+API Overview
 
-```bash
+Base URL:
+
+/api
+
+Interactive API documentation is available at:
+
+http://localhost:3000/api/docs
+
+Authentication
+
+Method
+
+Endpoint
+
+Auth
+
+Description
+
+POST
+
+/auth/signup
+
+—
+
+Create an account
+
+POST
+
+/auth/login
+
+—
+
+Authenticate and receive a JWT
+
+GET
+
+/auth/me
+
+JWT
+
+Get the authenticated user
+
+Example:
+
 curl -X POST localhost:3000/api/auth/signup \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@example.com","fullName":"Jane Doe","password":"password123"}'
@@ -90,279 +154,618 @@ curl -X POST localhost:3000/api/auth/signup \
 curl -X POST localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@example.com","password":"password123"}'
-# -> { "accessToken": "...", "tokenType": "Bearer", "user": {...} }
-```
 
-Every protected route expects `Authorization: Bearer <accessToken>`.
+Successful login returns:
 
-### Diagnostic centres & tests
+{
+  "accessToken": "...",
+  "tokenType": "Bearer",
+  "user": {}
+}
 
-| Method | Path                     | Auth | Description                                  |
-|--------|--------------------------|------|-----------------------------------------------|
-| GET    | `/centres`               | –    | List centres (paginated, `?location=` filter) |
-| POST   | `/centres`               | ✅   | Create a centre, optionally with initial tests|
-| GET    | `/centres/:id`           | –    | Get one centre with its tests                 |
-| GET    | `/centres/:id/tests`     | –    | List a centre's tests                         |
-| POST   | `/centres/:id/tests`     | ✅   | Add a test to a centre                        |
-| GET    | `/tests`                 | –    | List all tests across every centre (paginated)|
+Protected endpoints use:
 
-```bash
+Authorization: Bearer <accessToken>
+
+Diagnostic Centres & Tests
+
+Method
+
+Endpoint
+
+Auth
+
+Description
+
+GET
+
+/centres
+
+—
+
+List centres with pagination and optional location filter
+
+POST
+
+/centres
+
+JWT
+
+Create a centre and optionally add tests
+
+GET
+
+/centres/:id
+
+—
+
+Get a centre with its tests
+
+GET
+
+/centres/:id/tests
+
+—
+
+List tests for a centre
+
+POST
+
+/centres/:id/tests
+
+JWT
+
+Add a test to a centre
+
+GET
+
+/tests
+
+—
+
+List all tests with pagination
+
+Example:
+
 curl -X POST localhost:3000/api/centres \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{"name":"City Diagnostics","location":"Delhi","tests":[{"name":"CBC","price":499}]}'
-```
 
-*(Note: in this assignment, any authenticated user can create/manage centres — there's
-no separate "admin" role. See [Assumptions](#assumptions).)*
+In the current assignment implementation, any authenticated user can manage centres and tests. See Assumptions.
 
-### Bookings
+Bookings
 
-All booking routes require auth. A user only ever sees **their own** bookings.
+All booking endpoints require authentication.
 
-| Method | Path                    | Description                                         |
-|--------|-------------------------|------------------------------------------------------|
-| POST   | `/bookings`             | Book a test → creates a booking with status `PENDING`|
-| GET    | `/bookings`             | List your bookings (`?status=`, `?page=`, `?pageSize=`) |
-| GET    | `/bookings/:id`         | Get one booking (owner only, else `403`)              |
-| POST   | `/bookings/:id/cancel`  | Cancel a booking (blocked once `CONFIRMED`)           |
+Users can only access their own bookings.
 
-```bash
+Method
+
+Endpoint
+
+Description
+
+POST
+
+/bookings
+
+Create a booking
+
+GET
+
+/bookings
+
+List the authenticated user's bookings
+
+GET
+
+/bookings/:id
+
+Get a booking owned by the current user
+
+POST
+
+/bookings/:id/cancel
+
+Cancel a booking
+
+Supported booking filters:
+
+?status=
+?page=
+?pageSize=
+
+Creating a booking:
+
 curl -X POST localhost:3000/api/bookings \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{"testId":"<uuid>","appointmentDatetime":"2026-10-01T10:00:00.000Z"}'
-```
 
-### Payments
+A newly created booking starts with:
 
-| Method | Path                          | Auth | Description                                  |
-|--------|-------------------------------|------|------------------------------------------------|
-| POST   | `/payments`                   | ✅   | Simulate a payment attempt for a booking       |
-| POST   | `/payments/webhook`           | –    | Receive an async payment status update (idempotent) |
-| GET    | `/payments/booking/:bookingId`| ✅   | List payment attempts for a booking (owner only) |
+PENDING
 
-```bash
-# Simulate a payment (random outcome by default; force one for testing/demoing):
+Payments
+
+Method
+
+Endpoint
+
+Auth
+
+Description
+
+POST
+
+/payments
+
+JWT
+
+Create a simulated payment attempt
+
+POST
+
+/payments/webhook
+
+—
+
+Process an asynchronous payment update
+
+GET
+
+/payments/booking/:bookingId
+
+JWT
+
+List payment attempts for a booking
+
+Simulate a payment
+
 curl -X POST localhost:3000/api/payments \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{"bookingId":"<uuid>","forceOutcome":"SUCCESS"}'
 
-# Simulate the provider's async webhook:
+Simulate a payment webhook
+
 curl -X POST localhost:3000/api/payments/webhook \
   -H "Content-Type: application/json" \
   -d '{"eventId":"evt_123","providerReference":"sim_...","status":"SUCCESS"}'
-```
 
-`forceOutcome` is a **test/demo-only** override (mirroring the "magic test values" real
-sandbox gateways offer) so behavior can be asserted deterministically instead of relying
-on the random simulator (`PAYMENT_SUCCESS_RATE` in `.env`, default 80%).
+forceOutcome is a test/demo-only override. Without it, the payment simulator determines the result using PAYMENT_SUCCESS_RATE, which defaults to 80%.
 
----
+Database Design
 
-## Database / schema design
+The database schema is defined in db/schema.sql.
 
-See [`db/schema.sql`](./db/schema.sql) for the full, commented schema. Summary:
+Core entities
 
-```
 users
-  id (uuid, pk), email (unique), full_name, password_hash, created_at
+├── id (UUID, PK)
+├── email (UNIQUE)
+├── full_name
+├── password_hash
+└── created_at
 
 diagnostic_centres
-  id (uuid, pk), name, location, created_at
+├── id (UUID, PK)
+├── name
+├── location
+└── created_at
 
 diagnostic_tests
-  id (uuid, pk), centre_id (fk -> centres), name, price, created_at
-  UNIQUE (centre_id, name)
+├── id (UUID, PK)
+├── centre_id (FK)
+├── name
+├── price
+└── created_at
 
 bookings
-  id (uuid, pk), user_id (fk -> users), test_id (fk -> tests), centre_id (fk -> centres)
-  appointment_datetime, amount, status (enum: PENDING/CONFIRMED/FAILED/CANCELLED)
-  created_at, updated_at
+├── id (UUID, PK)
+├── user_id (FK)
+├── test_id (FK)
+├── centre_id (FK)
+├── appointment_datetime
+├── amount
+├── status
+├── created_at
+└── updated_at
 
 payments
-  id (uuid, pk), booking_id (fk -> bookings), amount
-  status (enum: PENDING/SUCCESS/FAILED)
-  provider_reference (UNIQUE)   <-- the simulated provider's transaction id
-  created_at, updated_at
+├── id (UUID, PK)
+├── booking_id (FK)
+├── amount
+├── status
+├── provider_reference (UNIQUE)
+├── created_at
+└── updated_at
 
 webhook_events
-  id (uuid, pk), event_id (UNIQUE), payload (jsonb), received_at
-```
+├── id (UUID, PK)
+├── event_id (UNIQUE)
+├── payload (JSONB)
+└── received_at
 
-Key design decisions:
+Important design decisions
 
-- **`bookings.amount` is a price snapshot**, not a live join to `diagnostic_tests.price`.
-  If a centre changes a test's price later, existing bookings must keep charging what the
-  user actually agreed to at booking time.
-- **A booking can have multiple `payments` rows** (e.g. a `FAILED` attempt followed by a
-  retried `SUCCESS` one). This preserves a full audit trail instead of overwriting history,
-  which matters a lot for anything touching money.
-- **`provider_reference` is `UNIQUE`** on `payments`. This is the anchor that makes the
-  webhook idempotent (see below) — it's a real database constraint, not just
-  application-level bookkeeping that could be raced.
-- **`webhook_events` is an idempotency ledger**, separate from `payments`, because the
-  provider's *delivery* identity (`event_id`) and the *transaction* identity
-  (`provider_reference`) are conceptually different things — a provider could retry the
-  same event, or fire a distinct new event about a transaction we've already resolved.
-  Both cases are covered (see next section).
-- Indexes added for the actual access patterns: `bookings(user_id)`,
-  `bookings(user_id, status)` (list-my-bookings-by-status), `payments(booking_id)`,
-  `diagnostic_tests(centre_id)`, `diagnostic_centres(location)` (location filter).
+1. Booking amount is a price snapshot
 
----
+bookings.amount stores the price agreed upon when the booking was created.
 
-## How the simulated payment flow works
+If the diagnostic centre changes the test price later, existing bookings retain their original amount.
 
-`POST /payments/` is meant to represent a synchronous call to a payment processor:
+2. Payment attempts are preserved
 
-1. Locks the booking row (`SELECT ... FOR UPDATE`) inside a transaction, so two concurrent
-   payment attempts on the same booking can't both proceed.
-2. Refuses to charge a `CANCELLED` booking (`409`).
-3. If the booking is already `CONFIRMED`, treats this as an **idempotent retry** — it
-   returns the existing successful payment (`200`) instead of creating a second charge.
-4. Otherwise, "calls" the simulator (`paymentService.decideOutcome`), inserts a new
-   `payments` row with a generated `provider_reference`, and updates the booking to
-   `CONFIRMED` or `FAILED` to match, all inside the same transaction.
+A booking can have multiple payment attempts:
 
-A booking that ends up `FAILED` **can be retried** — the second `/payments/` call for the
-same booking creates a *second* payment row and, on success, flips the booking to
-`CONFIRMED`. Nothing is overwritten.
+FAILED → SUCCESS
 
-## How webhook idempotency works
+Instead of overwriting the failed attempt, each payment is stored separately. This preserves an audit trail of payment activity.
 
-`POST /payments/webhook/` simulates the provider's async callback and is the part of the
-assignment most likely to be probed in the interview follow-up, so here's the exact
-reasoning:
+3. Database-backed uniqueness
 
-There are two distinct kinds of "duplicate" a webhook consumer has to defend against, and
-one `UNIQUE` constraint doesn't cover both:
+payments.provider_reference is UNIQUE.
 
-1. **The exact same delivery is retried** (network hiccup, provider's at-least-once
-   retry policy) — same `event_id`.
-2. **A different event arrives for a transaction that's already resolved** — e.g. the
-   user's payment was already confirmed via the synchronous `/payments/` call, or an
-   earlier webhook, and now a late/duplicate/reminder event shows up with a *new*
-   `event_id` but the same `provider_reference`.
+This prevents multiple payment records from representing the same provider transaction and provides a database-level guarantee for webhook processing.
 
-Both are handled, in one transaction:
+4. Separate webhook event ledger
 
-```js
-withTransaction(async (client) => {
-  // 1) Record this delivery. UNIQUE(event_id) makes a byte-for-byte replay
-  //    a guaranteed no-op at the database level, not just app logic.
-  const inserted = await recordWebhookEvent(client, eventId, payload);
-  if (!inserted) return { duplicate: true }; // already seen this exact event_id
+webhook_events.event_id is also UNIQUE.
 
-  // 2) Lock the payment row by its (unique) provider_reference.
-  const payment = await getPaymentByProviderReferenceForUpdate(client, providerReference);
-  if (!payment) throw new NotFoundError(...);
+This tracks the identity of the webhook delivery separately from the payment transaction itself.
 
-  // 3) Only apply the update if it's still PENDING. If it's already
-  //    SUCCESS/FAILED, some other event (or the sync payment call) got there
-  //    first -- re-applying would be unsafe, so no-op instead.
-  if (payment.status !== "PENDING") return { duplicate: true, payment };
+Both identifiers are required because:
 
-  // 4) Apply it: update payment + booking together.
-  ...
-});
-```
+The same webhook delivery can be retried with the same event_id.
 
-Because steps 1–4 run in a single DB transaction, there's no window where the event is
-recorded but its effect wasn't applied (or vice versa) if the process crashes mid-way.
+A different webhook event can reference an already-processed provider_reference.
 
-This is exercised directly in [`tests/payments.test.js`](./tests/payments.test.js):
-firing the same webhook 5 times in a row is asserted to leave exactly one `payments` row
-and one `webhook_events` row, and the booking status is asserted to never regress (e.g. a
-replayed event claiming `FAILED` cannot un-confirm an already-`CONFIRMED` booking).
+Indexes
 
----
+Indexes are provided for the main access patterns:
 
-## Edge cases handled
+bookings(user_id)
 
-- **Invalid requests** — every request body/query is validated with `zod`; a bad email,
-  missing field, non-positive price, or past appointment time returns a structured `400`.
-- **Malformed IDs** — a non-UUID path param (e.g. `/bookings/not-a-uuid`) returns `400`,
-  not a `500` from a raw Postgres error (`22P02` is mapped centrally).
-- **Non-existent resources** — booking/centre/test lookups by valid-but-unknown UUID
-  return `404`.
-- **Unauthorized access** — no token → `401`; expired/invalid/garbage token → `401`;
-  a valid token for a *different* user's booking/payment → `403`, not `404` (so an owner
-  gets an unambiguous "access denied" instead of information leaking through a `404` that
-  changes shape depending on ownership... though see the note in
-  [What I'd improve](#what-id-improve-with-more-time) about the trade-off there).
-- **Duplicate signups** — `409` on an already-registered email; same generic `401` message
-  for "wrong password" and "no such user" on login, so login responses don't leak which
-  emails exist.
-- **Booking state machine** — `CONFIRMED` bookings can't be cancelled (`409`);
-  `CANCELLED` bookings can't be paid for (`409`); cancelling an already-`CANCELLED`
-  booking is a safe no-op rather than an error (so a retried cancel-click doesn't fail).
-- **Repeated/failed payments** — a `FAILED` payment can be retried; retrying an already-
-  `CONFIRMED` booking doesn't create a second charge.
-- **Repeated webhook events** — see the dedicated section above; covered by 6 tests.
-- **Rate limiting** — a generous global limiter (300 req/15 min per IP) guards
-  against naive brute-forcing, particularly of `/auth/login`.
+bookings(user_id, status)
 
----
+payments(booking_id)
 
-## Running tests
+diagnostic_tests(centre_id)
 
-```bash
+diagnostic_centres(location)
+
+Payment Flow
+
+POST /payments represents a synchronous payment-provider call.
+
+The flow is:
+
+Client
+  │
+  ▼
+POST /payments
+  │
+  ▼
+Validate request
+  │
+  ▼
+Begin transaction
+  │
+  ▼
+Lock booking row
+SELECT ... FOR UPDATE
+  │
+  ├── CANCELLED ──► 409
+  │
+  ├── CONFIRMED ──► Return existing successful payment
+  │
+  ▼
+Run payment simulator
+  │
+  ▼
+Create payment attempt
+  │
+  ▼
+Update booking
+  │
+  ├── SUCCESS ──► CONFIRMED
+  │
+  └── FAILED ──► FAILED
+  │
+  ▼
+Commit transaction
+
+Concurrency handling
+
+The booking row is locked using:
+
+SELECT ... FOR UPDATE
+
+inside a transaction.
+
+This prevents two concurrent payment requests from both processing the same booking simultaneously.
+
+Retry behavior
+
+A failed payment can be retried:
+
+Booking
+   │
+   ├── Payment #1 → FAILED
+   │
+   └── Payment #2 → SUCCESS
+                    │
+                    ▼
+                 CONFIRMED
+
+If the booking is already CONFIRMED, another payment request is treated as an idempotent retry and does not create another successful charge.
+
+Webhook Idempotency
+
+The webhook endpoint handles asynchronous payment updates.
+
+There are two duplicate scenarios:
+
+1. Same event delivered multiple times
+
+For example:
+
+event_id = evt_123
+
+is received five times.
+
+webhook_events.event_id has a UNIQUE constraint, so only the first delivery is recorded.
+
+2. Different events reference the same transaction
+
+Two different events may have different event_id values but reference the same:
+
+provider_reference
+
+The payment row is therefore also locked and checked before applying the update.
+
+Processing flow
+
+Webhook
+   │
+   ▼
+Record event
+   │
+   ├── event_id already exists
+   │       └── Return duplicate
+   │
+   ▼
+Lock payment by provider_reference
+   │
+   ├── Payment already resolved
+   │       └── No-op
+   │
+   ▼
+Update payment + booking
+   │
+   ▼
+Commit transaction
+
+The event recording and payment update occur in the same database transaction.
+
+This prevents a situation where the webhook is marked as processed but its payment update is never applied because the process crashes between the two operations.
+
+The test suite verifies repeated webhook delivery and ensures booking state does not regress.
+
+Validation and Edge Cases
+
+The API explicitly handles:
+
+Request validation
+
+All request bodies and query parameters are validated with Zod.
+
+Examples:
+
+Invalid email
+
+Missing required fields
+
+Non-positive prices
+
+Invalid appointment timestamps
+
+Invalid query parameters
+
+These return structured 400 responses.
+
+Invalid UUIDs
+
+Malformed UUIDs such as:
+
+/bookings/not-a-uuid
+
+return 400 rather than exposing a PostgreSQL parsing error as a 500.
+
+Missing resources
+
+Valid but unknown UUIDs return:
+
+404 Not Found
+
+Authentication & authorization
+
+Missing token → 401
+
+Invalid/expired token → 401
+
+Accessing another user's booking/payment → 403
+
+Duplicate registration
+
+Attempting to register an existing email returns:
+
+409 Conflict
+
+Login uses the same generic 401 response for an incorrect password and a non-existent account, avoiding unnecessary account-existence disclosure.
+
+Booking state rules
+
+CONFIRMED → cannot be cancelled
+
+CANCELLED → cannot be paid
+
+Cancelling an already cancelled booking is a safe no-op
+
+Failed payments can be retried
+
+Confirmed bookings cannot be charged again
+
+Rate limiting
+
+A global rate limiter allows up to:
+
+300 requests / 15 minutes / IP
+
+This provides basic protection against brute-force traffic, particularly on authentication endpoints.
+
+Testing
+
+Run:
+
 npm test
-```
 
-39 tests across `auth`, `centres`, `bookings`, and `payments` (including the idempotency
-suite), run with Jest + Supertest against a real Postgres test database (truncated
-between tests via `tests/testUtils.js`). I chose integration tests over mocking the DB
-layer because the properties being verified — unique-constraint-backed idempotency,
-transaction rollback, row locking — are exactly the things a mock would paper over.
+The project contains 39 tests across:
 
----
+Authentication
 
-## Assumptions
+Diagnostic centres
 
-- **No separate "admin" role.** Any authenticated user can create diagnostic centres and
-  add tests to them. A real system would gate this behind a role/permission check; I kept
-  it open so the assignment's centre/test-management endpoints are easy to exercise
-  end-to-end without a separate seeding step.
-- **The webhook endpoint has no auth.** A real payment provider's webhook caller isn't one
-  of the app's end users, so it can't carry a user JWT. Production would verify a
-  provider-supplied HMAC signature header instead (see below).
-- **`forceOutcome` on `/payments/`** is included as an explicit, test/demo-only override so
-  outcomes can be asserted deterministically; it is not something a production client
-  should be allowed to pass (see below).
-- **One currency, `NUMERIC(10,2)`.** No multi-currency handling since none was specified.
-- **A booking "belongs" to exactly one centre/test combination** captured at creation
-  time; there's no "reschedule" endpoint, only cancel + rebook.
-- Postgres is assumed reachable via `DATABASE_URL`; SQLite/other DBs aren't supported
-  since the schema uses Postgres-specific features (`gen_random_uuid()`, native `ENUM`
-  types via `CREATE TYPE`).
+Bookings
 
----
+Payments
 
-## What I'd improve with more time
+Webhook idempotency
 
-- **Webhook signature verification.** Right now anyone who can reach `/payments/webhook`
-  can post a status update for a known `provider_reference`. A real integration would
-  verify an HMAC signature header (e.g. `X-Signature: sha256=...`) computed with a shared
-  secret, and reject unsigned/invalid requests before touching the DB.
-- **Remove (or gate behind `NODE_ENV=test`) the `forceOutcome` override** in
-  `POST /payments/`, so production traffic can never force a payment outcome.
-  It's currently always accepted for convenience during review/demoing.
-- **Versioned migrations.** `db/schema.sql` is a single idempotent file, fine for a
-  project this size, but a growing schema needs numbered migrations
-  (`node-pg-migrate` or similar) so changes are applied one at a time and are
-  reversible.
-- **Role-based access for centre/test management** (admin vs. regular user), instead of
-  "any authenticated user can create a centre."
-- **Batch-load tests when listing centres** instead of the current N+1 per-centre query —
-  fine at this data size, but I'd switch to a single query with `json_agg` once centre
-  counts grow.
-- **Structured JSON logging** (e.g. `pino`) instead of `morgan`'s dev-format lines, plus a
-  request-id per request for tracing across services.
-- **Redis-backed rate limiting** so limits are enforced correctly across multiple app
-  instances, instead of the current in-memory limiter (fine for a single instance, not
-  for a horizontally scaled deployment).
-- **A background job / retry queue** for anything that should survive a crash mid-flight —
-  e.g. re-driving webhook processing on transient DB errors, rather than relying entirely
-  on the provider's own retry policy.
-- **Soft-deletes / audit log** for bookings and payments, given this is healthcare-adjacent
-  data that a real system would need to retain and audit rather than ever hard-delete.
+Tests use Jest + Supertest with a real PostgreSQL test database.
+
+The database is truncated between tests through:
+
+tests/testUtils.js
+
+Why integration tests?
+
+The important properties of this API depend on actual PostgreSQL behavior:
+
+Unique constraints
+
+Transactions
+
+Row locking
+
+Rollbacks
+
+Database-backed idempotency
+
+Mocking the database layer would not verify these behaviors reliably.
+
+Test database setup
+
+createdb eve_healthcare_test
+
+Set TEST_DATABASE_URL in .env, then:
+
+npm test
+
+Assumptions
+
+No separate admin role
+
+Any authenticated user can create diagnostic centres and add tests.
+
+A production system would normally restrict this through role-based access control, but the assignment implementation keeps these endpoints directly testable.
+
+Webhook authentication
+
+The webhook endpoint does not use user JWT authentication because it represents an external payment provider.
+
+A production integration should verify a provider-supplied HMAC signature before processing the event.
+
+Payment outcome override
+
+forceOutcome exists only to make payment behavior deterministic during testing and demonstrations.
+
+It should not be exposed to production clients.
+
+Currency
+
+The API uses a single currency and:
+
+NUMERIC(10,2)
+
+No multi-currency support was required.
+
+Booking structure
+
+A booking represents one centre/test combination at creation time.
+
+There is no rescheduling endpoint; users can cancel and create a new booking.
+
+Database
+
+PostgreSQL is required because the schema uses PostgreSQL-specific functionality such as:
+
+gen_random_uuid()
+
+Native ENUM types
+
+PostgreSQL transaction/locking behavior
+
+Future Improvements
+
+If this were extended beyond the assignment, I would prioritize:
+
+Webhook signature verification
+Validate an HMAC signature such as X-Signature: sha256=... before processing webhooks.
+
+Remove or restrict forceOutcome
+Enable it only in test environments.
+
+Versioned database migrations
+Replace the single schema file with tools such as node-pg-migrate as the schema grows.
+
+Role-based access control
+Separate centre/test management from regular user access.
+
+Optimize centre queries
+Replace the current N+1 test-loading pattern with a single query using aggregation such as json_agg.
+
+Structured application logging
+Introduce structured logs and request IDs for easier debugging and distributed tracing.
+
+Distributed rate limiting
+Move rate-limit state to Redis for horizontally scaled deployments.
+
+Background processing
+Add a retry queue for webhook processing and other operations that need to survive application crashes.
+
+Audit and retention controls
+Add soft deletes and audit logging for healthcare-adjacent booking and payment data.
+
+Project Structure
+
+A simplified view of the project:
+
+.
+├── db/
+│   └── schema.sql
+├── tests/
+│   ├── testUtils.js
+│   └── ...
+├── src/
+│   └── ...
+├── .env.example
+├── docker-compose.yml
+├── package.json
+└── README.md
+
+License
+
+This project was created as part of the EVE Healthcare SDE Intern take-home assignment.
